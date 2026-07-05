@@ -224,9 +224,17 @@ label{display:block;font-size:.82rem;font-weight:600;color:#5c6bc0;margin-bottom
   <!-- Import -->
   <div class="card">
     <h2>📥 Importer les élèves</h2>
+    <div class="flex-gap" style="margin-bottom:10px;flex-wrap:wrap">
+      <span style="font-size:.82rem;font-weight:600;color:#5c6bc0">Classes à importer :</span>
+      <label style="cursor:pointer;font-size:.85rem;display:flex;align-items:center;gap:4px"><input type="checkbox" class="cls-import-check" value="0" checked> 3ème 1</label>
+      <label style="cursor:pointer;font-size:.85rem;display:flex;align-items:center;gap:4px"><input type="checkbox" class="cls-import-check" value="1" checked> 3ème 2</label>
+      <label style="cursor:pointer;font-size:.85rem;display:flex;align-items:center;gap:4px"><input type="checkbox" class="cls-import-check" value="2" checked> 3ème 3</label>
+      <label style="cursor:pointer;font-size:.85rem;display:flex;align-items:center;gap:4px"><input type="checkbox" class="cls-import-check" value="3" checked> 3ème 4</label>
+    </div>
     <div class="flex-gap">
       <button class="btn btn-primary" id="gsheetImportBtn" onclick="importFromGoogleSheets()">🔄 Synchroniser depuis Google Sheets</button>
       <button class="btn btn-outline btn-sm" onclick="document.getElementById('addStudentForm').style.display='block'">+ Ajouter manuellement</button>
+      <button class="btn btn-outline btn-sm" style="color:#c62828;border-color:#ef9a9a" onclick="clearSavedState()">🗑 Effacer les données</button>
     </div>
     <div id="gsheetStatus" style="margin-top:10px"></div>
     <div id="addStudentForm" style="display:none;margin-top:14px;border:1.5px dashed #c5cae9;border-radius:10px;padding:14px">
@@ -685,6 +693,7 @@ function _stopTest() {
   document.getElementById('header-status').textContent = 'Test terminé';
   renderTestGrid();
   renderResultsTable();
+  saveState();
   showTab('resultats');
 }
 
@@ -716,6 +725,7 @@ function eliminateStudent(id) {
   s.distance = Math.round(calculateDistance(sec));
 
   renderTestGrid();
+  saveState();
 
   const remaining = getActiveRunners().filter(st => !st.eliminated);
 
@@ -774,6 +784,7 @@ function addStudent() {
   document.getElementById('inPrenom').value = '';
   renderStudentTable();
   renderGroupPools();
+  saveState();
 }
 
 function removeStudent(id) {
@@ -784,6 +795,7 @@ function removeStudent(id) {
   state.groupB = state.groupB.filter(x => x !== id);
   renderStudentTable();
   renderGroupPools();
+  saveState();
 }
 
 function clearClass() {
@@ -795,6 +807,44 @@ function clearClass() {
   state.classes[state.currentClass] = [];
   renderStudentTable();
   renderGroupPools();
+  saveState();
+}
+
+// ============================================================
+//  PERSISTANCE LOCALE (localStorage)
+// ============================================================
+function saveState() {
+  try {
+    localStorage.setItem('vma_data', JSON.stringify({
+      classes: state.classes,
+      groupA: state.groupA,
+      groupB: state.groupB
+    }));
+  } catch(e) {}
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem('vma_data');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    for (const cls of CLASSES) {
+      if (data.classes?.[cls]?.length) state.classes[cls] = data.classes[cls];
+    }
+    if (data.groupA) state.groupA = data.groupA;
+    if (data.groupB) state.groupB = data.groupB;
+    const maxId = Math.max(0, ...CLASSES.flatMap(c => state.classes[c].map(s => s.id)));
+    if (maxId > 0) nextId = maxId + 1;
+  } catch(e) {}
+}
+
+function clearSavedState() {
+  if (!confirm('Effacer toutes les données locales (élèves et résultats) ?')) return;
+  localStorage.removeItem('vma_data');
+  for (const cls of CLASSES) state.classes[cls] = [];
+  state.groupA = []; state.groupB = [];
+  nextId = 1;
+  renderStudentTable(); renderGroupPools(); renderConfigSummary();
 }
 
 // ============================================================
@@ -883,9 +933,18 @@ async function importFromGoogleSheets() {
   btn.disabled = true;
   statusEl.innerHTML = '<div class="alert alert-info">Chargement en cours…</div>';
 
+  const checkedIdx = Array.from(document.querySelectorAll('.cls-import-check:checked')).map(cb => parseInt(cb.value));
+  const tabsToImport = SHEET_TABS.filter((_, i) => checkedIdx.includes(i));
+
+  if (tabsToImport.length === 0) {
+    btn.disabled = false;
+    statusEl.innerHTML = '<div class="alert alert-warn">Sélectionnez au moins une classe à importer.</div>';
+    return;
+  }
+
   let total = 0, errors = [];
 
-  for (const tab of SHEET_TABS) {
+  for (const tab of tabsToImport) {
     try {
       const rows = await fetchSheetGviz(tab);
       total += parseXLSXSheet(rows, tab);
@@ -899,7 +958,8 @@ async function importFromGoogleSheets() {
 
   if (total > 0) {
     autoGroupAfterImport();
-    const lines = SHEET_TABS.map(tab => {
+    saveState();
+    const lines = tabsToImport.map(tab => {
       const err = errors.find(e => e.tab === tab);
       const cls = CLASSES[SHEET_TABS.indexOf(tab)];
       const count = err ? 0 : state.classes[cls].length;
@@ -1485,6 +1545,7 @@ function importResults(input) {
 //  INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
+  loadState();
   renderStudentTable();
   renderGroupPools();
   renderObsSheet();
