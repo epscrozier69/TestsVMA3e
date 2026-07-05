@@ -514,38 +514,40 @@ function getAudioCtx() {
   return _audioCtx;
 }
 
-// iOS Safari : débloque le contexte audio dès le premier toucher sur la page
-function _unlockAudio() {
-  try {
-    const ctx = getAudioCtx();
-    if (ctx.state === 'suspended') {
-      ctx.resume();
-      // Joue un buffer silencieux pour forcer le déblocage iOS
-      const buf = ctx.createBuffer(1, 1, 22050);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(0);
-    }
-  } catch(e) {}
-}
-document.addEventListener('touchstart', _unlockAudio, { once: true });
-document.addEventListener('click',      _unlockAudio, { once: true });
+// Buffers pré-rendus du sifflet (court et long) — AudioBufferSourceNode est
+// plus fiable qu'OscillatorNode pour la planification future sur iOS Safari
+let _shortBuf = null, _longBuf = null, _keepAliveSrc = null, _masterGain = null, _masterComp = null;
 
-// Nœud maître : tous les oscillateurs passent par ce gain → compresseur → sortie
-let _masterGain = null;
-let _masterComp = null;
-let _keepAliveOsc = null;
+async function buildWhistleBuffers() {
+  for (const [dur, isLong] of [[0.75, false],[1.8, true]]) {
+    const sr = 44100;
+    const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, Math.ceil((dur+0.1)*sr), sr);
+    const comp = off.createDynamicsCompressor();
+    comp.threshold.value=-6; comp.knee.value=3; comp.ratio.value=12;
+    comp.attack.value=0.001; comp.release.value=0.1;
+    comp.connect(off.destination);
+    [[3700,2600,0.9],[2900,2100,0.7],[1800,1400,0.4]].forEach(([f1,f2,vol])=>{
+      const osc=off.createOscillator(), g=off.createGain();
+      osc.connect(g); g.connect(comp); osc.type='sawtooth';
+      osc.frequency.setValueAtTime(f1,0);
+      osc.frequency.exponentialRampToValueAtTime(f2,dur*0.75);
+      g.gain.setValueAtTime(0,0);
+      g.gain.linearRampToValueAtTime(vol,0.01);
+      g.gain.setValueAtTime(vol,dur*0.6);
+      g.gain.exponentialRampToValueAtTime(0.001,dur);
+      osc.start(0); osc.stop(dur+0.05);
+    });
+    const buf = await off.startRendering();
+    if (isLong) _longBuf=buf; else _shortBuf=buf;
+  }
+}
 
 function getMasterGain() {
   const ctx = getAudioCtx();
   if (!_masterGain) {
     _masterComp = ctx.createDynamicsCompressor();
-    _masterComp.threshold.setValueAtTime(-6, ctx.currentTime);
-    _masterComp.knee.setValueAtTime(3, ctx.currentTime);
-    _masterComp.ratio.setValueAtTime(12, ctx.currentTime);
-    _masterComp.attack.setValueAtTime(0.001, ctx.currentTime);
-    _masterComp.release.setValueAtTime(0.1, ctx.currentTime);
+    _masterComp.threshold.value=-6; _masterComp.knee.value=3;
+    _masterComp.ratio.value=12; _masterComp.attack.value=0.001; _masterComp.release.value=0.1;
     _masterComp.connect(ctx.destination);
     _masterGain = ctx.createGain();
     _masterGain.gain.value = 1;
@@ -554,61 +556,49 @@ function getMasterGain() {
   return _masterGain;
 }
 
-// Maintient l'AudioContext actif sur iOS avec un son quasi-silencieux continu
-// Sans cela, iOS suspend le contexte après quelques secondes de silence
+// Boucle silencieuse — empêche iOS de suspendre l'AudioContext pendant le test
 function startKeepAlive() {
   const ctx = getAudioCtx();
-  // Reprend si suspendu (y compris en arrière-plan)
-  ctx.onstatechange = () => { if (ctx.state === 'suspended') ctx.resume(); };
-
-  if (_keepAliveOsc) return;
-  _keepAliveOsc = ctx.createOscillator();
-  const silentGain = ctx.createGain();
-  silentGain.gain.value = 0.0001; // Inaudible mais non nul → iOS garde le contexte actif
-  _keepAliveOsc.frequency.value = 1; // Infra-son (non perceptible)
-  _keepAliveOsc.connect(silentGain);
-  silentGain.connect(ctx.destination);
-  _keepAliveOsc.start();
+  ctx.onstatechange = () => { if (ctx.state==='suspended') ctx.resume(); };
+  if (_keepAliveSrc) return;
+  const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); // 1s de silence
+  _keepAliveSrc = ctx.createBufferSource();
+  _keepAliveSrc.buffer = buf;
+  _keepAliveSrc.loop = true;
+  _keepAliveSrc.connect(ctx.destination);
+  _keepAliveSrc.start();
 }
 
 function stopKeepAlive() {
-  if (_keepAliveOsc) {
-    try { _keepAliveOsc.stop(); _keepAliveOsc.disconnect(); } catch(e) {}
-    _keepAliveOsc = null;
-  }
-  const ctx = _audioCtx;
-  if (ctx) ctx.onstatechange = null;
+  if (_keepAliveSrc) { try{_keepAliveSrc.stop();_keepAliveSrc.disconnect();}catch(e){} _keepAliveSrc=null; }
+  if (_audioCtx) _audioCtx.onstatechange = null;
 }
 
-// Planifie un sifflet à un instant précis de l'horloge Web Audio
+// Joue le sifflet via AudioBufferSourceNode (méthode la plus fiable sur iOS)
 function _playWhistleAt(ctxTime, long) {
   if (state.test.muted) return;
+  const buf = long ? _longBuf : _shortBuf;
+  if (!buf) return;
   try {
     const ctx = getAudioCtx();
-    const dur = long ? 1.8 : 0.75;
     const t = Math.max(ctxTime, ctx.currentTime + 0.005);
-    const master = getMasterGain();
-
-    [[3700, 2600, 0.9], [2900, 2100, 0.7], [1800, 1400, 0.4]].forEach(([f1, f2, vol]) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(master);
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(f1, t);
-      osc.frequency.exponentialRampToValueAtTime(f2, t + dur * 0.75);
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(vol, t + 0.01);
-      gain.gain.setValueAtTime(vol, t + dur * 0.6);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-      osc.start(t); osc.stop(t + dur + 0.05);
-      osc.onended = () => { try { gain.disconnect(); } catch(e) {} };
-    });
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(getMasterGain());
+    src.start(t);
   } catch(e) {}
 }
 
 function playWhistle(long = false) {
   _playWhistleAt(getAudioCtx().currentTime, long);
 }
+
+// Débloque l'AudioContext dès le premier toucher
+function _unlockAudio() {
+  try { const ctx=getAudioCtx(); if(ctx.state==='suspended') ctx.resume(); } catch(e){}
+}
+document.addEventListener('touchstart', _unlockAudio, { once: true });
+document.addEventListener('click',      _unlockAudio, { once: true });
 
 function announceSpeed(palier, speed) {
   if (state.test.muted || !('speechSynthesis' in window)) return;
@@ -1616,6 +1606,7 @@ function importResults(input) {
 //  INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
+  buildWhistleBuffers().catch(()=>{}); // Pré-rendu du sifflet en arrière-plan
   loadState();
   renderStudentTable();
   renderGroupPools();
