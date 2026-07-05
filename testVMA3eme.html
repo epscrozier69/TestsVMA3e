@@ -372,6 +372,7 @@ label{display:block;font-size:.82rem;font-weight:600;color:#5c6bc0;margin-bottom
   <div class="flex-gap" style="margin-bottom:16px" id="resultControls">
     <button class="btn btn-success" onclick="exportExcel()">📤 Exporter Excel</button>
     <button class="btn btn-outline" onclick="exportCSV()">📄 Exporter CSV</button>
+    <button id="btnSyncSheet" class="btn btn-primary" onclick="syncAllResultsToSheet()">☁️ Sauvegarder dans Google Sheets</button>
     <label class="btn btn-primary" style="cursor:pointer" title="Charger un fichier Excel exporté précédemment">
       📥 Charger résultats
       <input type="file" id="resultImportFile" accept=".xlsx,.xls" onchange="importResults(this)" style="display:none">
@@ -436,6 +437,7 @@ label{display:block;font-size:.82rem;font-weight:600;color:#5c6bc0;margin-bottom
 //  STATE
 // ============================================================
 const SHEET_ID = '1ExFoJwg4aIXzta0FO_CkFU72uAFGH649jjrglUPcKsE';
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx7nUnN_obrtSJ0XcxczA8ByK7QAtggxoaVeeKuzMXSOzfxmJ2ViITaDuGJVyaME9LV/exec';
 const SHEET_TABS = ['3ème1','3ème2','3ème3','3ème4'];
 const CLASSES = ['3eme1','3eme2','3eme3','3eme4'];
 const CLASS_LABELS = {
@@ -804,6 +806,7 @@ function eliminateStudent(id) {
 
   renderTestGrid();
   saveState();
+  pushResultToSheet([s]);
 
   const remaining = getActiveRunners().filter(st => !st.eliminated);
 
@@ -1614,6 +1617,55 @@ function importResults(input) {
     input.value = '';
   };
   reader.readAsArrayBuffer(file);
+}
+
+// ============================================================
+//  SAUVEGARDE RÉSULTATS → GOOGLE SHEETS (Apps Script)
+// ============================================================
+function studentToResult(s) {
+  return {
+    classe: CLASS_LABELS[s.classe] || s.classe,
+    nom: s.nom,
+    prenom: s.prenom,
+    sexe: s.sexe || 'M',
+    palier: s.palier || '',
+    speed: s.vma || '',
+    vma: s.vma || '',
+    elapsed: s.elapsedSec != null ? Math.round(s.elapsedSec) : '',
+    distance: s.distance || ''
+  };
+}
+
+async function pushResultToSheet(students) {
+  if (!SCRIPT_URL) return;
+  const results = students.filter(s => s.vma !== null).map(studentToResult);
+  if (results.length === 0) return;
+  try {
+    await fetch(SCRIPT_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results })
+    });
+    showSyncStatus(`✅ ${results.length} résultat(s) sauvegardé(s)`);
+  } catch(e) {
+    showSyncStatus('⚠️ Sauvegarde échouée (réseau ?)');
+  }
+}
+
+async function syncAllResultsToSheet() {
+  const btn = document.getElementById('btnSyncSheet');
+  if (btn) { btn.disabled = true; btn.textContent = 'Envoi…'; }
+  const all = CLASSES.flatMap(cls => state.classes[cls].filter(s => s.vma !== null));
+  await pushResultToSheet(all);
+  if (btn) { btn.disabled = false; btn.textContent = '☁️ Sauvegarder dans Google Sheets'; }
+}
+
+function showSyncStatus(msg) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  el.textContent = msg;
+  setTimeout(() => { el.textContent = ''; }, 5000);
 }
 
 // ============================================================
