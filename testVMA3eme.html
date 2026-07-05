@@ -518,27 +518,31 @@ function getAudioCtx() {
 // plus fiable qu'OscillatorNode pour la planification future sur iOS Safari
 let _shortBuf = null, _longBuf = null, _keepAliveSrc = null, _masterGain = null, _masterComp = null;
 
-async function buildWhistleBuffers() {
+function buildWhistleBuffers() {
+  // Génération mathématique du PCM — aucune dépendance à OfflineAudioContext
+  const ctx = getAudioCtx();
+  const sr = ctx.sampleRate || 44100;
+  const freqs = [[3700,2600,0.9],[2900,2100,0.7],[1800,1400,0.4]];
+
   for (const [dur, isLong] of [[0.75, false],[1.8, true]]) {
-    const sr = 44100;
-    const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, Math.ceil((dur+0.1)*sr), sr);
-    const comp = off.createDynamicsCompressor();
-    comp.threshold.value=-6; comp.knee.value=3; comp.ratio.value=12;
-    comp.attack.value=0.001; comp.release.value=0.1;
-    comp.connect(off.destination);
-    [[3700,2600,0.9],[2900,2100,0.7],[1800,1400,0.4]].forEach(([f1,f2,vol])=>{
-      const osc=off.createOscillator(), g=off.createGain();
-      osc.connect(g); g.connect(comp); osc.type='sawtooth';
-      osc.frequency.setValueAtTime(f1,0);
-      osc.frequency.exponentialRampToValueAtTime(f2,dur*0.75);
-      g.gain.setValueAtTime(0,0);
-      g.gain.linearRampToValueAtTime(vol,0.01);
-      g.gain.setValueAtTime(vol,dur*0.6);
-      g.gain.exponentialRampToValueAtTime(0.001,dur);
-      osc.start(0); osc.stop(dur+0.05);
-    });
-    const buf = await off.startRendering();
-    if (isLong) _longBuf=buf; else _shortBuf=buf;
+    const buf = ctx.createBuffer(1, Math.ceil(dur * sr) + 512, sr);
+    const data = buf.getChannelData(0);
+    const phases = [0,0,0];
+    for (let i = 0; i < data.length; i++) {
+      const t = i / sr;
+      const env = t < 0.01 ? t/0.01
+                : t < dur*0.6 ? 1.0
+                : t < dur     ? 1.0 - (t - dur*0.6)/(dur*0.4)
+                : 0;
+      let s = 0;
+      freqs.forEach(([f1,f2,vol],k) => {
+        const freq = f1 + (f2-f1) * Math.min(t/(dur*0.75), 1);
+        phases[k] = (phases[k] + freq/sr) % 1;
+        s += (phases[k]*2 - 1) * vol * env; // onde dent de scie
+      });
+      data[i] = Math.max(-1, Math.min(1, s/3));
+    }
+    if (isLong) _longBuf = buf; else _shortBuf = buf;
   }
 }
 
@@ -704,6 +708,7 @@ async function startTest() {
   document.getElementById('test-not-started').style.display = 'none';
   document.getElementById('test-running-ui').style.display = 'block';
 
+  if (!_shortBuf || !_longBuf) { try { buildWhistleBuffers(); } catch(e) {} }
   startKeepAlive();
   playWhistle(true);
   announceSpeed(1, 7);
@@ -1606,7 +1611,7 @@ function importResults(input) {
 //  INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
-  buildWhistleBuffers().catch(()=>{}); // Pré-rendu du sifflet en arrière-plan
+  try { buildWhistleBuffers(); } catch(e) {} // Pré-calcul du sifflet
   loadState();
   renderStudentTable();
   renderGroupPools();
