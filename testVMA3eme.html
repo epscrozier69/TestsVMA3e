@@ -514,6 +514,24 @@ function getAudioCtx() {
   return _audioCtx;
 }
 
+// iOS Safari : débloque le contexte audio dès le premier toucher sur la page
+function _unlockAudio() {
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+      // Joue un buffer silencieux pour forcer le déblocage iOS
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    }
+  } catch(e) {}
+}
+document.addEventListener('touchstart', _unlockAudio, { once: true });
+document.addEventListener('click',      _unlockAudio, { once: true });
+
 function playWhistle(long = false) {
   if (state.test.muted) return;
   try {
