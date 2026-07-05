@@ -533,23 +533,51 @@ document.addEventListener('touchstart', _unlockAudio, { once: true });
 document.addEventListener('click',      _unlockAudio, { once: true });
 
 // Nœud maître : tous les oscillateurs passent par ce gain → compresseur → sortie
-// Mettre le gain à 0 coupe instantanément tous les sons (utile à l'arrêt du test)
 let _masterGain = null;
+let _masterComp = null;
+let _keepAliveOsc = null;
+
 function getMasterGain() {
   const ctx = getAudioCtx();
   if (!_masterGain) {
+    _masterComp = ctx.createDynamicsCompressor();
+    _masterComp.threshold.setValueAtTime(-6, ctx.currentTime);
+    _masterComp.knee.setValueAtTime(3, ctx.currentTime);
+    _masterComp.ratio.setValueAtTime(12, ctx.currentTime);
+    _masterComp.attack.setValueAtTime(0.001, ctx.currentTime);
+    _masterComp.release.setValueAtTime(0.1, ctx.currentTime);
+    _masterComp.connect(ctx.destination);
     _masterGain = ctx.createGain();
     _masterGain.gain.value = 1;
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.setValueAtTime(-6, ctx.currentTime);
-    comp.knee.setValueAtTime(3, ctx.currentTime);
-    comp.ratio.setValueAtTime(12, ctx.currentTime);
-    comp.attack.setValueAtTime(0.001, ctx.currentTime);
-    comp.release.setValueAtTime(0.1, ctx.currentTime);
-    _masterGain.connect(comp);
-    comp.connect(ctx.destination);
+    _masterGain.connect(_masterComp);
   }
   return _masterGain;
+}
+
+// Maintient l'AudioContext actif sur iOS avec un son quasi-silencieux continu
+// Sans cela, iOS suspend le contexte après quelques secondes de silence
+function startKeepAlive() {
+  const ctx = getAudioCtx();
+  // Reprend si suspendu (y compris en arrière-plan)
+  ctx.onstatechange = () => { if (ctx.state === 'suspended') ctx.resume(); };
+
+  if (_keepAliveOsc) return;
+  _keepAliveOsc = ctx.createOscillator();
+  const silentGain = ctx.createGain();
+  silentGain.gain.value = 0.0001; // Inaudible mais non nul → iOS garde le contexte actif
+  _keepAliveOsc.frequency.value = 1; // Infra-son (non perceptible)
+  _keepAliveOsc.connect(silentGain);
+  silentGain.connect(ctx.destination);
+  _keepAliveOsc.start();
+}
+
+function stopKeepAlive() {
+  if (_keepAliveOsc) {
+    try { _keepAliveOsc.stop(); _keepAliveOsc.disconnect(); } catch(e) {}
+    _keepAliveOsc = null;
+  }
+  const ctx = _audioCtx;
+  if (ctx) ctx.onstatechange = null;
 }
 
 // Planifie un sifflet à un instant précis de l'horloge Web Audio
@@ -686,6 +714,7 @@ async function startTest() {
   document.getElementById('test-not-started').style.display = 'none';
   document.getElementById('test-running-ui').style.display = 'block';
 
+  startKeepAlive();
   playWhistle(true);
   announceSpeed(1, 7);
 
@@ -739,10 +768,11 @@ function _stopTest() {
 function clearTestTimers() {
   state.test.timers.forEach(t => clearTimeout(t));
   state.test.timers = [];
-  // Coupe immédiatement tous les sifflets déjà planifiés
+  stopKeepAlive();
   if (_masterGain) {
     try { _masterGain.gain.setValueAtTime(0, getAudioCtx().currentTime); } catch(e) {}
     _masterGain = null;
+    _masterComp = null;
   }
 }
 
