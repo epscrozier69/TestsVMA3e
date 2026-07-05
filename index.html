@@ -609,20 +609,23 @@ function getActiveRunners() {
     .filter(s => s && s.classe === cls);
 }
 
-function goToTest() {
+async function goToTest() {
   const runners = getActiveRunners();
   if (runners.length === 0) {
     const grp = getActiveGroup();
     alert(`Le groupe ${grp} ne contient aucun élève. Assignez des élèves au groupe ${grp} dans l'onglet Général ou Configuration.`);
     return;
   }
-  startTest();
+  await startTest();
   showTab('test');
 }
 
-function startTest() {
-  // Resume/create audio context
-  try { getAudioCtx().resume(); } catch(e) {}
+async function startTest() {
+  // iOS Safari : AudioContext doit être resume() dans le gestionnaire de clic (await obligatoire)
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+  } catch(e) {}
 
   clearTestTimers();
 
