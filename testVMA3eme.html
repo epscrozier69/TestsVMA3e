@@ -517,7 +517,7 @@ function getAudioCtx() {
 
 // Buffers pré-rendus du sifflet (court et long) — AudioBufferSourceNode est
 // plus fiable qu'OscillatorNode pour la planification future sur iOS Safari
-let _shortBuf = null, _longBuf = null, _keepAliveSrc = null, _masterGain = null, _masterComp = null;
+let _shortBuf = null, _longBuf = null, _keepAliveSrc = null, _keepAliveInterval = null, _masterGain = null, _masterComp = null;
 
 function buildWhistleBuffers() {
   // Génération mathématique du PCM — aucune dépendance à OfflineAudioContext
@@ -561,20 +561,29 @@ function getMasterGain() {
   return _masterGain;
 }
 
-// Boucle silencieuse — empêche iOS de suspendre l'AudioContext pendant le test
+// Keep-alive : bruit blanc très faible (non-silencieux) pour empêcher iOS de suspendre l'AudioContext
 function startKeepAlive() {
   const ctx = getAudioCtx();
   ctx.onstatechange = () => { if (ctx.state==='suspended') ctx.resume(); };
   if (_keepAliveSrc) return;
-  const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); // 1s de silence
+  const sr = ctx.sampleRate;
+  const buf = ctx.createBuffer(1, sr, sr); // 1s en boucle
+  const data = buf.getChannelData(0);
+  // Bruit à amplitude infime (≈ −74 dB, inaudible) — iOS ne suspend pas un contexte actif
+  for (let i = 0; i < sr; i++) data[i] = (Math.random() * 2 - 1) * 0.0001;
   _keepAliveSrc = ctx.createBufferSource();
   _keepAliveSrc.buffer = buf;
   _keepAliveSrc.loop = true;
   _keepAliveSrc.connect(ctx.destination);
   _keepAliveSrc.start();
+  // Filet de sécurité : toutes les 3s, forcer la reprise si suspendu
+  _keepAliveInterval = setInterval(() => {
+    if (ctx.state === 'suspended') ctx.resume();
+  }, 3000);
 }
 
 function stopKeepAlive() {
+  if (_keepAliveInterval) { clearInterval(_keepAliveInterval); _keepAliveInterval = null; }
   if (_keepAliveSrc) { try{_keepAliveSrc.stop();_keepAliveSrc.disconnect();}catch(e){} _keepAliveSrc=null; }
   if (_audioCtx) _audioCtx.onstatechange = null;
 }
