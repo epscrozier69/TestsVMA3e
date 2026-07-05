@@ -1023,8 +1023,6 @@ async function importFromGoogleSheets() {
   let total = 0, errors = [];
 
   for (const tab of tabsToImport) {
-    const cls = CLASSES[SHEET_TABS.indexOf(tab)];
-    if (cls) state.classes[cls] = []; // vider avant d'importer pour éviter les doublons
     try {
       const rows = await fetchSheetGviz(tab);
       total += parseXLSXSheet(rows, tab);
@@ -1036,7 +1034,9 @@ async function importFromGoogleSheets() {
 
   btn.disabled = false;
 
-  if (total > 0) {
+  const tabsOk = tabsToImport.length - errors.length;
+  if (tabsOk > 0) {
+    // Réassigner les groupes même si aucun nouvel élève (les élèves déjà présents n'ont pas forcément de groupe)
     autoGroupAfterImport();
     saveState();
     const lines = tabsToImport.map(tab => {
@@ -1046,7 +1046,8 @@ async function importFromGoogleSheets() {
       if (err) return `<br>• ${tab} : ❌ ${err.msg}`;
       return `<br>• ${tab} : ✅ ${count} élève(s)`;
     }).join('');
-    statusEl.innerHTML = `<div class="alert alert-success">${total} élève(s) importé(s). Groupes A/B pré-assignés.${lines}</div>`;
+    const msg = total > 0 ? `${total} élève(s) importé(s).` : `Liste à jour.`;
+    statusEl.innerHTML = `<div class="alert alert-success">${msg} Groupes A/B pré-assignés.${lines}</div>`;
   } else {
     const detail = errors.map(e => `<br>• ${e.tab} : ❌ ${e.msg}`).join('');
     statusEl.innerHTML = `<div class="alert alert-warn">Aucune donnée importée.${detail}</div>`;
@@ -1646,8 +1647,8 @@ async function pushResultToSheet(students) {
     await fetch(SCRIPT_URL, {
       method: 'POST',
       mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ results })
+      // pas de Content-Type explicite : le navigateur envoie text/plain (compatible no-cors + Apps Script)
     });
     showSyncStatus(`✅ ${results.length} résultat(s) sauvegardé(s)`);
   } catch(e) {
