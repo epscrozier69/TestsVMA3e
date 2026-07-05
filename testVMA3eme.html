@@ -532,15 +532,14 @@ function _unlockAudio() {
 document.addEventListener('touchstart', _unlockAudio, { once: true });
 document.addEventListener('click',      _unlockAudio, { once: true });
 
-function playWhistle(long = false) {
+// Joue un sifflet à un instant précis de l'horloge Web Audio (ctx.currentTime)
+function _playWhistleAt(ctxTime, long) {
   if (state.test.muted) return;
   try {
     const ctx = getAudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
     const dur = long ? 1.8 : 0.75;
-    const t = ctx.currentTime;
+    const t = Math.max(ctxTime, ctx.currentTime + 0.005);
 
-    // Compresseur pour éviter la saturation tout en maximisant le volume
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.setValueAtTime(-6, t);
     comp.knee.setValueAtTime(3, t);
@@ -549,7 +548,6 @@ function playWhistle(long = false) {
     comp.release.setValueAtTime(0.1, t);
     comp.connect(ctx.destination);
 
-    // Trois oscillateurs : richesse harmonique + puissance
     [[3700, 2600, 0.9], [2900, 2100, 0.7], [1800, 1400, 0.4]].forEach(([f1, f2, vol]) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -562,8 +560,13 @@ function playWhistle(long = false) {
       gain.gain.setValueAtTime(vol, t + dur * 0.6);
       gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
       osc.start(t); osc.stop(t + dur + 0.05);
+      osc.onended = () => { try { gain.disconnect(); comp.disconnect(); } catch(e) {} };
     });
-  } catch(e) { /* ignore */ }
+  } catch(e) {}
+}
+
+function playWhistle(long = false) {
+  _playWhistleAt(getAudioCtx().currentTime, long);
 }
 
 function announceSpeed(palier, speed) {
@@ -678,24 +681,61 @@ async function startTest() {
   renderTestGrid();
 }
 
+// Sifflets planifiés via l'horloge Web Audio (non throttlée sur iOS)
+// UI events (palier-start) restent en setTimeout car ce ne sont que des mises à jour visuelles
+let _pendingWhistles = [];
+let _audioSchedulerTimer = null;
+const LOOKAHEAD_SEC = 0.20; // 200ms d'anticipation
+
 function scheduleEvents() {
-  const startTime = state.test.startTime;
+  const ctx = getAudioCtx();
+  state.test.audioStartTime = ctx.currentTime;
+  const wallStart = state.test.startTime;
+
+  // Whistles → liste d'instants Web Audio, traités par le lookahead scheduler
+  _pendingWhistles = state.test.events
+    .filter(ev => ev.type === 'whistle')
+    .map(ev => state.test.audioStartTime + ev.time);
+
+  // Palier-start → setTimeout (juste pour la UI/annonce vocale)
   for (const ev of state.test.events) {
-    const delay = ev.time * 1000 - (Date.now() - startTime);
+    if (ev.type !== 'palier-start') continue;
+    const delay = ev.time * 1000 - (Date.now() - wallStart);
     if (delay < 0) continue;
     const tid = setTimeout(() => {
       if (!state.test.running) return;
-      if (ev.type === 'whistle') {
-        playWhistle(false);
-      } else if (ev.type === 'palier-start') {
-        state.test.currentPalier = ev.palier;
-        state.test.currentSpeed = ev.speed;
-        announceSpeed(ev.palier, ev.speed);
-        updateDisplay();
-      }
+      state.test.currentPalier = ev.palier;
+      state.test.currentSpeed = ev.speed;
+      announceSpeed(ev.palier, ev.speed);
+      updateDisplay();
     }, delay);
     state.test.timers.push(tid);
   }
+
+  // Démarre le lookahead scheduler (toutes les 25ms)
+  if (_audioSchedulerTimer) clearInterval(_audioSchedulerTimer);
+  _audioSchedulerTimer = setInterval(_audioLookahead, 25);
+}
+
+function _audioLookahead() {
+  if (!state.test.running) {
+    clearInterval(_audioSchedulerTimer);
+    _audioSchedulerTimer = null;
+    return;
+  }
+  const ctx = getAudioCtx();
+  const nowCtx = ctx.currentTime;
+  const scheduleUntil = nowCtx + LOOKAHEAD_SEC;
+  const remaining = [];
+  for (const ctxTime of _pendingWhistles) {
+    if (ctxTime < nowCtx - 0.05) continue;       // passé, on ignore
+    if (ctxTime <= scheduleUntil) {
+      _playWhistleAt(ctxTime, false);             // dans la fenêtre → on planifie
+    } else {
+      remaining.push(ctxTime);                    // futur → on garde
+    }
+  }
+  _pendingWhistles = remaining;
 }
 
 function stopTest() {
@@ -718,6 +758,8 @@ function _stopTest() {
 function clearTestTimers() {
   state.test.timers.forEach(t => clearTimeout(t));
   state.test.timers = [];
+  if (_audioSchedulerTimer) { clearInterval(_audioSchedulerTimer); _audioSchedulerTimer = null; }
+  _pendingWhistles = [];
 }
 
 // ============================================================
