@@ -203,6 +203,7 @@ label{display:block;font-size:.82rem;font-weight:600;color:#5c6bc0;margin-bottom
   <div class="header-icon">🏃</div>
   <h1>EPS Joliot Curie — Test VMA</h1>
   <div style="margin-left:auto;font-size:.8rem;opacity:.7" id="header-status">Prêt</div>
+  <div style="font-size:.75rem;color:#a5d6a7;margin-left:12px" id="syncStatus"></div>
 </header>
 
 <nav class="main-tabs" id="mainNav">
@@ -718,28 +719,27 @@ async function startTest() {
   renderTestGrid();
 }
 
-// Planifie TOUS les sifflets d'un coup via osc.start(tempsExact)
-// Le moteur audio les joue précisément même si JS est throttlé par iOS
 function scheduleEvents() {
-  const ctx = getAudioCtx();
-  state.test.audioStartTime = ctx.currentTime;
   const wallStart = state.test.startTime;
-
   for (const ev of state.test.events) {
-    if (ev.type === 'whistle') {
-      _playWhistleAt(state.test.audioStartTime + ev.time, false);
-    } else if (ev.type === 'palier-start') {
-      const delay = ev.time * 1000 - (Date.now() - wallStart);
-      if (delay < 0) continue;
-      const tid = setTimeout(() => {
-        if (!state.test.running) return;
+    const delay = ev.time * 1000 - (Date.now() - wallStart);
+    if (delay < 0) continue;
+    const tid = setTimeout(async () => {
+      if (!state.test.running) return;
+      if (ev.type === 'whistle') {
+        try {
+          const ctx = getAudioCtx();
+          if (ctx.state !== 'running') await ctx.resume();
+          playWhistle(false);
+        } catch(e) {}
+      } else if (ev.type === 'palier-start') {
         state.test.currentPalier = ev.palier;
         state.test.currentSpeed = ev.speed;
         announceSpeed(ev.palier, ev.speed);
         updateDisplay();
-      }, delay);
-      state.test.timers.push(tid);
-    }
+      }
+    }, delay);
+    state.test.timers.push(tid);
   }
 }
 
@@ -1608,18 +1608,81 @@ function importResults(input) {
 }
 
 // ============================================================
+//  SYNC SILENCIEUX AU DÉMARRAGE (Google Sheets → localStorage)
+// ============================================================
+async function silentSyncFromSheets() {
+  const syncEl = document.getElementById('syncStatus');
+  if (syncEl) syncEl.textContent = 'Synchronisation…';
+  let updated = 0;
+  for (let i = 0; i < SHEET_TABS.length; i++) {
+    const tab = SHEET_TABS[i];
+    const cls = CLASSES[i];
+    try {
+      const rows = await fetchSheetGviz(tab);
+      if (rows.length < 2) continue;
+      // parse rows into temp objects
+      const header = rows[0].map(h => String(h).trim().toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g,''));
+      const iNomPrenom = header.findIndex(h => h.includes('nom') && (h.includes('pr')));
+      const iNom    = iNomPrenom !== -1 ? -1 : header.findIndex(h => h === 'nom' || h === 'nom ');
+      const iPrenom = iNomPrenom !== -1 ? -1 : header.findIndex(h => h.startsWith('pre') || h.startsWith('pré'));
+      const iSexe   = header.findIndex(h => h.includes('sexe') || h.includes('genre'));
+      if (iNomPrenom === -1 && iNom === -1) continue;
+      const sheetStudents = [];
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        let nom, prenom;
+        if (iNomPrenom !== -1) {
+          const sp = splitNomPrenom(String(row[iNomPrenom] || ''));
+          nom = sp.nom; prenom = sp.prenom;
+        } else {
+          nom    = String(row[iNom] || '').trim().toUpperCase();
+          prenom = String(row[iPrenom] || '').trim();
+        }
+        if (!nom || !prenom) continue;
+        const sexe = iSexe !== -1 ? String(row[iSexe]||'M').trim().toUpperCase().charAt(0) : 'M';
+        sheetStudents.push({ nom, prenom, sexe });
+      }
+      if (sheetStudents.length === 0) continue;
+      // Merge: keep existing students (preserve VMA results), add new ones
+      const existing = state.classes[cls];
+      const existingKeys = new Set(existing.map(s => s.nom + '|' + s.prenom));
+      let added = 0;
+      for (const ss of sheetStudents) {
+        if (!existingKeys.has(ss.nom + '|' + ss.prenom)) {
+          existing.push({ id: nextId++, nom: ss.nom, prenom: ss.prenom,
+            classe: cls, sexe: ss.sexe, eliminated: false, vma: null });
+          added++;
+        }
+      }
+      if (added > 0) updated += added;
+    } catch(e) { /* réseau indisponible, on garde localStorage */ }
+  }
+  if (updated > 0) {
+    for (const cls of CLASSES) {
+      state.classes[cls].sort((a, b) =>
+        a.nom.localeCompare(b.nom, 'fr') || a.prenom.localeCompare(b.prenom, 'fr'));
+    }
+    saveState();
+    renderStudentTable();
+    renderGroupPools();
+    renderConfigSummary();
+  }
+  if (syncEl) syncEl.textContent = updated > 0 ? `✅ +${updated} élève(s) synchronisé(s)` : '✅ À jour';
+  setTimeout(() => { if (syncEl) syncEl.textContent = ''; }, 4000);
+}
+
+// ============================================================
 //  INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
-  try { buildWhistleBuffers(); } catch(e) {} // Pré-calcul du sifflet
+  try { buildWhistleBuffers(); } catch(e) {}
   loadState();
   renderStudentTable();
   renderGroupPools();
   renderObsSheet();
   renderConfigSummary();
-
-  // Demo data (can be removed)
-  // state.classes['3eme1'].push({id:nextId++,nom:'MARTIN',prenom:'Alice',classe:'3eme1',sexe:'F',eliminated:false,vma:null});
+  silentSyncFromSheets();
 });
 </script>
 </body>
