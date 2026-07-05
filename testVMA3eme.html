@@ -1023,6 +1023,8 @@ async function importFromGoogleSheets() {
   let total = 0, errors = [];
 
   for (const tab of tabsToImport) {
+    const cls = CLASSES[SHEET_TABS.indexOf(tab)];
+    if (cls) state.classes[cls] = []; // vider avant d'importer pour éviter les doublons
     try {
       const rows = await fetchSheetGviz(tab);
       total += parseXLSXSheet(rows, tab);
