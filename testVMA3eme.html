@@ -933,14 +933,11 @@ async function importFromGoogleSheets() {
   btn.disabled = true;
   statusEl.innerHTML = '<div class="alert alert-info">Chargement en cours…</div>';
 
-  const checkedIdx = Array.from(document.querySelectorAll('.cls-import-check:checked')).map(cb => parseInt(cb.value));
+  const checks = document.querySelectorAll('.cls-import-check:checked');
+  const checkedIdx = checks.length > 0
+    ? Array.from(checks).map(cb => parseInt(cb.value))
+    : SHEET_TABS.map((_, i) => i);
   const tabsToImport = SHEET_TABS.filter((_, i) => checkedIdx.includes(i));
-
-  if (tabsToImport.length === 0) {
-    btn.disabled = false;
-    statusEl.innerHTML = '<div class="alert alert-warn">Sélectionnez au moins une classe à importer.</div>';
-    return;
-  }
 
   let total = 0, errors = [];
 
